@@ -9,9 +9,9 @@ import Starscream
 import PromiseKit
 
 public typealias SessionRequestClosure = (_ id: Int64, _ peerParam: WCSessionRequestParam) -> Void
-public typealias DisconnectClosure = (Error?) -> Void
+public typealias DisconnectClosure = (String, UInt16) -> Void
 public typealias CustomRequestClosure = (_ id: Int64, _ request: [String: Any]) -> Void
-public typealias ErrorClosure = (Error) -> Void
+public typealias ErrorClosure = (Error?) -> Void
 
 public enum WCInteractorState {
     case connected
@@ -20,7 +20,7 @@ public enum WCInteractorState {
     case disconnected
 }
 
-open class WCInteractor {
+open class WCInteractor: WebSocketDelegate {
     public let session: WCSession
 
     public private(set) var state: WCInteractorState
@@ -50,6 +50,7 @@ open class WCInteractor {
 
     private var peerId: String?
     private var peerMeta: WCPeerMeta?
+    private var isConnected: Bool = false
 
     public init(session: WCSession, meta: WCPeerMeta, uuid: UUID, sessionRequestTimeout: TimeInterval = 20) {
         self.session = session
@@ -66,12 +67,43 @@ open class WCInteractor {
         self.bnb = WCBinanceInteractor()
         self.trust = WCTrustInteractor()
         self.okt = WCOKExChainInteractor()
-
-        socket.onConnect = { [weak self] in self?.onConnect() }
-        socket.onDisconnect = { [weak self] error in self?.onDisconnect(error: error) }
-        socket.onText = { [weak self] text in self?.onReceiveMessage(text: text) }
-        socket.onPong = { _ in WCLog("<== pong") }
-        socket.onData = { data in WCLog("<== websocketDidReceiveData: \(data.toHexString())") }
+        
+        self.socket.delegate = self
+        
+    }
+    
+    
+    public func didReceive(event: WebSocketEvent, client: WebSocket) {
+        switch event {
+        case .connected(_):
+            self.isConnected = true
+            self.onConnect()
+            break
+        case .disconnected(let reason, let code):
+            self.isConnected = false
+            self.onDisconnect?(reason, code)
+            break
+        case .text(let text):
+            self.onReceiveMessage(text: text)
+            break
+        case .binary(let data):
+            WCLog("<== websocketDidReceiveData: \(data.toHexString())")
+            break
+        case .ping(_):
+            break
+        case .pong(_):
+            WCLog("<== pong")
+            break
+        case .viabilityChanged(_):
+            break
+        case .reconnectSuggested(_):
+            break
+        case .cancelled:
+            break
+        case .error(let error):
+            onError?(error)
+            break
+        }
     }
 
     deinit {
@@ -79,7 +111,7 @@ open class WCInteractor {
     }
 
     open func connect() -> Promise<Bool> {
-        if socket.isConnected {
+        if isConnected {
             return Promise.value(true)
         }
         socket.connect()
@@ -91,7 +123,7 @@ open class WCInteractor {
 
     open func pause() {
         state = .paused
-        socket.disconnect(forceTimeout: nil, closeCode: CloseCode.goingAway.rawValue)
+        socket.disconnect(closeCode: CloseCode.goingAway.rawValue)
     }
 
     open func resume() {
@@ -279,7 +311,7 @@ extension WCInteractor {
         }
 
         connectResolver = nil
-        onDisconnect?(error)
+        onError?(error)
 
         state = .disconnected
     }
